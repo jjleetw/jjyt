@@ -1,6 +1,7 @@
 from flask import Flask, request, jsonify
 import re
 import traceback
+# 修改導入方式，避免名稱衝突
 import youtube_transcript_api
 from youtube_transcript_api import YouTubeTranscriptApi
 
@@ -40,26 +41,25 @@ def get_transcript():
         transcript_list = None
         
         try:
-            # 獲取該影片所有的字幕清單
+            # 使用正確的類別方法獲取字幕清單
             transcript_metadata = YouTubeTranscriptApi.list_transcripts(video_id)
             
-            # 【核心修改】：優先抓取頻道主上傳的原始語言字幕 (Manual Transcript)
+            # 優先嘗試抓取「非自動生成」的原始字幕 (Manual)
             try:
-                # find_manually_created_transcript 會自動尋找非自動生成的原始字幕
                 transcript_list = transcript_metadata.find_manually_created_transcript().fetch()
             except:
-                # 如果沒有手動字幕，則抓取任何可用的字幕 (通常是自動生成)
-                # 不指定語言，系統會回傳該影片預設的語言
+                # 如果沒有手動字幕，則抓取該影片預設的第一個字幕 (包含自動生成)
+                # 這會反映原頻道的預設語言設定
                 transcript_list = next(iter(transcript_metadata)).fetch()
 
         except Exception as e:
             return jsonify({
                 'success': False, 
-                'error': f'No transcript available: {str(e)}',
+                'error': f'字幕庫讀取失敗: {str(e)}',
                 'video_id': video_id
             }), 404
         
-        # 串接為純文字供 n8n 直接使用
+        # 串接為純文字供 n8n 直接寫入 Google Docs
         full_text = " ".join([t['text'] for t in transcript_list])
         
         return jsonify({
@@ -70,8 +70,7 @@ def get_transcript():
         })
 
     except Exception as e:
-        print(f"Unexpected Error: {str(e)}")
-        return jsonify({'success': False, 'error': str(e)}), 500
+        return jsonify({'success': False, 'error': f'系統錯誤: {str(e)}'}), 500
 
 @app.route('/health', methods=['GET'])
 def health():
