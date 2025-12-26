@@ -1,12 +1,13 @@
 from flask import Flask, request, jsonify
-from youtube_transcript_api import YouTubeTranscriptApi
 import re
 import traceback
+import youtube_transcript_api
+from youtube_transcript_api import YouTubeTranscriptApi
 
 app = Flask(__name__)
 
 def extract_video_id(url):
-    """Extract YouTube video ID from URL"""
+    """從 URL 提取 YouTube 影片 ID"""
     patterns = [
         r'(?:youtube\.com\/watch\?v=|youtu\.be\/|youtube\.com\/embed\/)([^&\n?#]+)',
     ]
@@ -14,89 +15,68 @@ def extract_video_id(url):
         match = re.search(pattern, url)
         if match:
             return match.group(1)
+    if url and len(url) == 11 and "/" not in url:
+        return url
     return None
 
 @app.route('/', methods=['GET'])
 def home():
-    """Home endpoint"""
     return jsonify({
-        'message': 'YouTube Transcript API is running',
-        'endpoints': {
-            '/transcript': 'POST - Get YouTube transcript',
-            '/health': 'GET - Health check'
-        }
+        'status': 'running',
+        'service': 'YouTube Transcript API (Original Language Mode)'
     })
 
 @app.route('/transcript', methods=['POST'])
 def get_transcript():
-    """Get YouTube transcript"""
     try:
         data = request.json
-        if not data:
-            return jsonify({'error': 'No data provided'}), 400
+        if not data or 'url' not in data:
+            return jsonify({'success': False, 'error': 'Missing URL'}), 400
             
-        url = data.get('url')
-        if not url:
-            return jsonify({'error': 'URL is required'}), 400
-        
-        video_id = extract_video_id(url)
+        video_id = extract_video_id(data['url'])
         if not video_id:
-            # 如果傳入的已經是 ID 而非 URL，直接使用
-            video_id = url if len(url) == 11 else None
-            
-        if not video_id:
-            return jsonify({'error': 'Invalid YouTube URL or ID'}), 400
+            return jsonify({'success': False, 'error': 'Invalid ID or URL'}), 400
         
-        # 嘗試獲取字幕，優先順序：繁體中文 > 簡體 > 英文
         transcript_list = None
-        languages_to_try = [
-            ['zh-Hant'],
-            ['zh-Hans'],
-            ['zh'],
-            ['en'],
-            None  # 任何可用的語言
-        ]
         
-        for languages in languages_to_try:
+        try:
+            # 獲取該影片所有的字幕清單
+            transcript_metadata = YouTubeTranscriptApi.list_transcripts(video_id)
+            
+            # 【核心修改】：優先抓取頻道主上傳的原始語言字幕 (Manual Transcript)
             try:
-                if languages:
-                    transcript_list = YouTubeTranscriptApi.get_transcript(video_id, languages=languages)
-                else:
-                    transcript_list = YouTubeTranscriptApi.get_transcript(video_id)
-                break
-            except Exception as lang_error:
-                continue
+                # find_manually_created_transcript 會自動尋找非自動生成的原始字幕
+                transcript_list = transcript_metadata.find_manually_created_transcript().fetch()
+            except:
+                # 如果沒有手動字幕，則抓取任何可用的字幕 (通常是自動生成)
+                # 不指定語言，系統會回傳該影片預設的語言
+                transcript_list = next(iter(transcript_metadata)).fetch()
+
+        except Exception as e:
+            return jsonify({
+                'success': False, 
+                'error': f'No transcript available: {str(e)}',
+                'video_id': video_id
+            }), 404
         
-        if not transcript_list:
-            return jsonify({'error': 'No transcript found for this video'}), 404
-        
-        # 轉換為純文本格式
+        # 串接為純文字供 n8n 直接使用
         full_text = " ".join([t['text'] for t in transcript_list])
         
         return jsonify({
             'success': True,
             'video_id': video_id,
             'transcript_text': full_text,
-            'raw_transcript': transcript_list
+            'length': len(full_text)
         })
 
     except Exception as e:
-        error_msg = str(e)
-        print(f"Error: {error_msg}")
-        print(traceback.format_exc())
-        
-        # 針對常見錯誤提供更友善的訊息
-        if "Subtitles are disabled" in error_msg:
-            return jsonify({'error': '此影片已關閉字幕功能'}), 404
-        elif "No transcript found" in error_msg:
-            return jsonify({'error': '找不到符合語言要求的字幕'}), 404
-        
-        return jsonify({'error': error_msg}), 500
+        print(f"Unexpected Error: {str(e)}")
+        return jsonify({'success': False, 'error': str(e)}), 500
 
 @app.route('/health', methods=['GET'])
 def health():
-    """Health check endpoint"""
     return jsonify({'status': 'ok'})
 
 if __name__ == '__main__':
+    # Zeabur 部署建議使用 8080 端口
     app.run(host='0.0.0.0', port=8080, debug=False)
