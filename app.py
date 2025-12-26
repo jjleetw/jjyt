@@ -1,6 +1,6 @@
 from flask import Flask, request, jsonify
 import re
-# 核心修正：僅導入模組，避免類別與變數名稱衝突
+# 核心修正：直接導入整個模組，避免名稱衝突
 import youtube_transcript_api
 from youtube_transcript_api import YouTubeTranscriptApi
 
@@ -17,11 +17,11 @@ def extract_video_id(url):
 
 @app.route('/', methods=['GET'])
 def home():
-    """驗證路由：解決日誌中的 GET / 404 錯誤"""
+    """首頁測試路由，確保不再出現 GET / 404"""
     return jsonify({
         'status': 'Online',
-        'message': 'YouTube Transcript API 運行中 (官方規範版)',
-        'note': '請發送 POST 請求至 /transcript'
+        'message': 'API 已採用防禦模式運行',
+        'mode': 'Original Language'
     })
 
 @app.route('/transcript', methods=['POST'])
@@ -29,38 +29,39 @@ def get_transcript():
     try:
         data = request.json
         if not data or 'url' not in data:
-            return jsonify({'success': False, 'error': 'Missing URL'}), 200
+            return jsonify({'success': False, 'error': '請提供 url 參數'}), 200
             
         video_id = extract_video_id(data['url'])
         if not video_id:
-            return jsonify({'success': False, 'error': 'Invalid Video ID'}), 200
+            return jsonify({'success': False, 'error': '無效的 YouTube 連結'}), 200
 
         transcript_list = None
         
-        # --- 根據官方文件 (GitHub) 的標準調用流程 ---
+        # --- 核心修正：採用全路徑調用，避開 "No attribute" 報錯 ---
         try:
-            # 1. 獲取所有字幕清單 (支援原頻道語系)
-            transcript_list_obj = YouTubeTranscriptApi.list_transcripts(video_id)
+            # 優先嘗試：獲取字幕清單以鎖定原頻道語言
+            # 使用全路徑 youtube_transcript_api.YouTubeTranscriptApi
+            transcript_list_obj = youtube_transcript_api.YouTubeTranscriptApi.list_transcripts(video_id)
             
-            # 2. 優先抓取手動上傳的原始字幕
             try:
+                # 優先抓取手動上傳的原始字幕
                 transcript_list = transcript_list_obj.find_manually_created_transcript().fetch()
             except:
-                # 3. 若無手動，則抓取第一個可用的字幕 (通常為自動生成之原語系)
+                # 若無手動，抓取第一個可用的字幕 (原語系自動生成)
                 transcript_list = next(iter(transcript_list_obj)).fetch()
                 
-        except Exception as e_list:
-            # 備援方案：若 list_transcripts 屬性仍報錯，直接使用最基礎的獲取方法
+        except Exception:
+            # 備援：若 list_transcripts 仍失敗，退回最基礎的 get_transcript
             try:
-                transcript_list = YouTubeTranscriptApi.get_transcript(video_id)
+                transcript_list = youtube_transcript_api.YouTubeTranscriptApi.get_transcript(video_id)
             except Exception as e_final:
                 return jsonify({
                     'success': False, 
-                    'error': f'此影片找不到字幕: {str(e_final)}',
+                    'error': f'此影片確實無字幕內容: {str(e_final)}',
                     'video_id': video_id
                 }), 200
 
-        # 將字幕片段串接為長字串，方便 n8n 使用
+        # 將字幕片段串接為整段文字，方便 n8n 使用
         full_text = " ".join([t['text'] for t in transcript_list])
         
         return jsonify({
@@ -70,13 +71,13 @@ def get_transcript():
         })
 
     except Exception as e:
-        # 將技術報錯包裝在 JSON 中回傳
-        return jsonify({'success': False, 'error': f'系統全域異常: {str(e)}'}), 200
+        # 將技術報錯轉換為 JSON
+        return jsonify({'success': False, 'error': f'程式執行錯誤: {str(e)}'}), 200
 
 @app.route('/health', methods=['GET'])
 def health():
     return jsonify({'status': 'ok'})
 
 if __name__ == '__main__':
-    # Zeabur 建議使用 8080 Port
+    # Zeabur 部署必須使用 8080 Port
     app.run(host='0.0.0.0', port=8080)
